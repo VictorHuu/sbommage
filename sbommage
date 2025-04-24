@@ -1,7 +1,9 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 import json
 import sys
 import re
+
+from rich.pretty import traverse
 from textual.app import App
 from textual.containers import Container, Horizontal, VerticalScroll
 from textual.widgets import Tree, Footer, Static
@@ -52,23 +54,44 @@ class SBOMFormatDetector:
 
 class SBOMParser:
     """Parse different SBOM formats into a common structure."""
-    
     @staticmethod
     def parse_spdx(content: Dict[Any, Any]) -> Dict[str, Any]:
         packages = []
+        relationships = {}
+        pkg_dict = {}
         if 'packages' in content:
             for pkg in content['packages']:
-                packages.append({
+                spdx_id = pkg.get('SPDXID', 'Unknown')
+                pkg_elem = {
                     'name': pkg.get('name', 'Unknown'),
+                    'id' : pkg.get('SPDXID','Unknown'),
                     'version': pkg.get('versionInfo', 'Unknown'),
                     'type': pkg.get('type', 'Unknown'),
                     'supplier': pkg.get('supplier', 'Unknown'),
                     'license': pkg.get('licenseConcluded', 'Unknown'),
+                }
+                pkg_dict[spdx_id]=pkg_elem
+                packages.append(pkg_elem)
+        if 'relationships' in content:
+            for rel in content['relationships']:
+                from_id = pkg_dict.get(rel.get('spdxElementId', 'Unknown'), {'id': 'Unknown'})['id']
+                to_pkg = pkg_dict.get(rel.get('relatedSpdxElement', 'Unknown'), {'name': 'Unknown','id': 'Unknown'})
+                relationship = rel.get('relationshipType', 'Unknown')
+                if from_id not in relationships:
+                    relationships[from_id] = []
+
+                relationships[from_id].append({
+                    'from_name': pkg_dict.get(from_id,{'name':'Unknown'})['name'],
+                    'to_pkg': to_pkg,
+                    'relationship': relationship,
                 })
+        with open('output.json', 'w', encoding='utf-8') as f:
+            json.dump(relationships, f, indent=4, ensure_ascii=False)
         return {
             'format': 'SPDX',
             'version': content.get('spdxVersion', 'Unknown'),
-            'packages': packages
+            'packages': packages,
+            'relationships': relationships
         }
 
     @staticmethod
@@ -402,12 +425,51 @@ class Sbommage(App):
         # Add metadata nodes
         self._add_metadata_nodes(self.tree_view.root)
 
-        # Add packages under a "Packages" node
-        packages_node = self.tree_view.root.add("Packages")
+        modules_node = self.tree_view.root.add("Modules")
+        module_owned_by = {}
+        module_nodes = {}
         if 'packages' in self.sbom_data:
             for package in sorted(self.sbom_data['packages'], key=lambda x: x['name']):
-                node = packages_node.add_leaf(package['name'])
-                node.data = {'type': 'package', 'info': package}
+                sorted_deps = sorted(self.sbom_data['relationships'][package['id']],
+                                     key=lambda x: x['to_pkg']['name'])
+                if package['id'] not in module_owned_by:
+                    module_owned_by[package['id']]='ORPHAN'
+                    if 'ORPHAN' not in module_nodes:
+                        module_nodes['ORPHAN']=modules_node.add('ORPHAN')
+
+                for dep in sorted_deps:
+                    if dep['to_pkg']['id'] == 'Unknown':
+                        continue
+                    if dep['relationship'] == 'CONTAINS':
+                        module_owned_by[dep['to_pkg']['id']] = package['id']
+                        if package['id'] not in module_nodes:
+                            module_nodes[package['id']] = modules_node.add(package['name'])
+        # Add packages under a "Modules" node
+
+        if 'packages' in self.sbom_data:
+            for package in sorted(self.sbom_data['packages'], key=lambda x: x['name']):
+                mod_owned_by = module_owned_by[package['id']]
+                node = module_nodes[mod_owned_by].add(package['name'])
+                self.traverse_packages(node,package,0)
+
+    def traverse_packages(self,node,package,depth):
+        depth = depth+1
+        if depth>6:
+            return
+        main_node = node.add_leaf("MainPackage")
+        main_node.data = {'type': 'package', 'info': package}
+        sorted_deps = sorted(self.sbom_data['relationships'][package['id']],key=lambda x: x['to_pkg']['name'])
+
+        dep_nodes_added = False
+        for dep in sorted_deps:
+            if dep['to_pkg']['name'] == 'Unknown':
+                continue
+            if dep['relationship'] == 'DEPENDENCY_OF':
+                if dep_nodes_added == False:
+                    dep_nodes = node.add("Dependencies")
+                    dep_nodes_added = True
+                dep_node = dep_nodes.add(dep['to_pkg']['name'])
+                self.traverse_packages(dep_node,dep['to_pkg'],depth)
 
     def load_tree_by_type(self):
         """Display components organized by type."""
