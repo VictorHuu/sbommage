@@ -68,19 +68,19 @@ class SBOMParser:
         pattern = r'Package-(' + '|'.join(re.escape(t) for t in types) + r')\b'
         if 'packages' in content:
             ##File
-            for fl in content['files']:
-                spdx_id = fl.get('SPDXID', 'Unknown')
-                fl_elem = {
-                    'category': 'File',
-                    'name': fl.get('fileName', 'Unknown'),
-                    'id' : spdx_id,
-                    'version': fl.get('versionInfo', 'Unknown'),
-                    'type': fl.get('fileTypes', ['Unknown'])[0],
-                    'supplier': fl.get('supplier', 'Unknown'),
-                    'license': fl.get('licenseConcluded', 'Unknown'),
-                }
-                pkg_dict[spdx_id]=fl_elem
-                packages.append(fl_elem)
+            # for fl in content['files']:
+            #     spdx_id = fl.get('SPDXID', 'Unknown')
+            #     fl_elem = {
+            #         'category': 'File',
+            #         'name': fl.get('fileName', 'Unknown'),
+            #         'id' : spdx_id,
+            #         'version': fl.get('versionInfo', 'Unknown'),
+            #         'type': fl.get('fileTypes', ['Unknown'])[0],
+            #         'supplier': fl.get('supplier', 'Unknown'),
+            #         'license': fl.get('licenseConcluded', 'Unknown'),
+            #     }
+            #     pkg_dict[spdx_id]=fl_elem
+            #     packages.append(fl_elem)
             for pkg in content['packages']:
                 spdx_id = pkg.get('SPDXID', 'Unknown')
                 matches = re.findall(pattern, spdx_id)
@@ -486,6 +486,8 @@ class Sbommage(App):
         if 'packages' in self.sbom_data:
             id_nodes={}
             for package in sorted(self.sbom_data['packages'], key=lambda x: x['name']):
+                if self.vis.get(package['id'],False)==True:
+                    continue
                 path = []
                 mod_owned_by = module_owned_by[package['id']]
                 if package['name'] not in id_nodes:
@@ -494,16 +496,19 @@ class Sbommage(App):
                 else:
                     node = id_nodes[package['name']]
                 real_node = node.add(package['id'])
-                self.traverse_packages(real_node,package,mod_owned_by=='ORPHAN',path)
-                path = []
-
-    def traverse_packages(self,node,package,is_orphan,path):
+                self.traverse_packages(real_node,package,mod_owned_by=='ORPHAN',path,0)
+    vis = {}
+    def traverse_packages(self,node,package,is_orphan,path,depth):
+        depth = depth + 1
+        if depth >10:
+            return
         for v in path :
             if v['id']==package['id']:
                 return
         path.append(package)
         main_node = node.add_leaf("MainPackage")
         main_node.data = {'type': 'package', 'info': package}
+        self.vis[package['id']]=True
         if self.sbom_data['relationships'].get(package['id'], None) == None:
             return
         sorted_deps = sorted(self.sbom_data['relationships'][package['id']],key=lambda x: x['to_pkg']['name'])
@@ -527,7 +532,7 @@ class Sbommage(App):
                 else:
                     dep_node = dep_id_nodes[dep['to_pkg']['name']]
                 real_dep_node = dep_node.add(dep['to_pkg']['id'])
-                self.traverse_packages(real_dep_node,dep['to_pkg'],False,path)
+                self.traverse_packages(real_dep_node,dep['to_pkg'],False,path,depth)
             if dep['relationship'] == 'CONTAINS':
                 if sub_nodes is None:
                     sub_nodes = node.add("Modules")
@@ -537,7 +542,7 @@ class Sbommage(App):
                 else:
                     sub_node = dep_id_nodes[dep['to_pkg']['name']]
                 real_sub_node = sub_node.add(dep['to_pkg']['id'])
-                self.traverse_packages(real_sub_node,dep['to_pkg'],False,path)
+                self.traverse_packages(real_sub_node,dep['to_pkg'],False,path,depth)
         path.pop()
 
     def load_tree_by_type(self):
