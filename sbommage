@@ -59,14 +59,26 @@ class SBOMParser:
         packages = []
         relationships = {}
         pkg_dict = {}
+
+        types = ['UnknownPackage', 'alpm', 'apk', 'binary', 'bitnami', 'pod', 'conan', 'dart-pub', 'deb', 'dotnet',
+                 'erlang-otp', 'gem', 'github-action', 'github-action-workflow', 'go-module', 'graalvm-native-image',
+                 'hackage', 'hex', 'java-archive', 'jenkins-plugin', 'msrc-kb', 'linux-kernel', 'linux-kernel-module',
+                 'nix', 'npm', 'opam', 'php-composer', 'php-pecl', 'portage', 'python', 'R-package', 'lua-rocks',
+                 'rpm', 'rust-crate', 'swift', 'swiplpack', 'terraform', 'wordpress-plugin']
+        pattern = r'Package-(' + '|'.join(re.escape(t) for t in types) + r')\b'
         if 'packages' in content:
             for pkg in content['packages']:
                 spdx_id = pkg.get('SPDXID', 'Unknown')
+                matches = re.findall(pattern, spdx_id)
+                if len(matches)==0:
+                    type = 'Unknown'
+                else:
+                    type = matches[0]
                 pkg_elem = {
                     'name': pkg.get('name', 'Unknown'),
-                    'id' : pkg.get('SPDXID','Unknown'),
+                    'id' : spdx_id,
                     'version': pkg.get('versionInfo', 'Unknown'),
-                    'type': pkg.get('type', 'Unknown'),
+                    'type': type,
                     'supplier': pkg.get('supplier', 'Unknown'),
                     'license': pkg.get('licenseConcluded', 'Unknown'),
                 }
@@ -87,6 +99,8 @@ class SBOMParser:
                 })
         with open('output.json', 'w', encoding='utf-8') as f:
             json.dump(relationships, f, indent=4, ensure_ascii=False)
+        with open('output2.json', 'w', encoding='utf-8') as f:
+            json.dump(packages, f, indent=4, ensure_ascii=False)
         return {
             'format': 'SPDX',
             'version': content.get('spdxVersion', 'Unknown'),
@@ -447,12 +461,18 @@ class Sbommage(App):
         # Add packages under a "Modules" node
 
         if 'packages' in self.sbom_data:
+            id_nodes={}
             for package in sorted(self.sbom_data['packages'], key=lambda x: x['name']):
                 mod_owned_by = module_owned_by[package['id']]
-                node = module_nodes[mod_owned_by].add(package['name'])
-                self.traverse_packages(node,package,0)
+                if package['name'] not in id_nodes:
+                    node = module_nodes[mod_owned_by].add(package['name'])
+                    id_nodes[package['name']]=node
+                else:
+                    node = id_nodes[package['name']]
+                real_node = node.add(package['id'])
+                self.traverse_packages(real_node,package,0,mod_owned_by=='ORPHAN')
 
-    def traverse_packages(self,node,package,depth):
+    def traverse_packages(self,node,package,depth,is_orphan):
         depth = depth+1
         if depth>6:
             return
@@ -460,16 +480,35 @@ class Sbommage(App):
         main_node.data = {'type': 'package', 'info': package}
         sorted_deps = sorted(self.sbom_data['relationships'][package['id']],key=lambda x: x['to_pkg']['name'])
 
-        dep_nodes_added = False
+        if is_orphan:
+            return
+        dep_id_nodes = {}
+        sub_id_nodes = {}
+        dep_nodes = None
+        sub_nodes = None
         for dep in sorted_deps:
             if dep['to_pkg']['name'] == 'Unknown':
                 continue
             if dep['relationship'] == 'DEPENDENCY_OF':
-                if dep_nodes_added == False:
+                if dep_nodes is None:
                     dep_nodes = node.add("Dependencies")
-                    dep_nodes_added = True
-                dep_node = dep_nodes.add(dep['to_pkg']['name'])
-                self.traverse_packages(dep_node,dep['to_pkg'],depth)
+                if dep['to_pkg']['name'] not in dep_id_nodes:
+                    dep_node = dep_nodes.add(dep['to_pkg']['name'])
+                    dep_id_nodes[dep['to_pkg']['name']] = dep_node
+                else:
+                    dep_node = dep_id_nodes[dep['to_pkg']['name']]
+                real_dep_node = dep_node.add(dep['to_pkg']['id'])
+                self.traverse_packages(real_dep_node,dep['to_pkg'],depth,False)
+            if dep['relationship'] == 'CONTAINS':
+                if sub_nodes is None:
+                    sub_nodes = node.add("Modules")
+                if dep['to_pkg']['name'] not in dep_id_nodes:
+                    sub_node = sub_nodes.add(dep['to_pkg']['name'])
+                    sub_id_nodes[dep['to_pkg']['name']] = sub_node
+                else:
+                    sub_node = dep_id_nodes[dep['to_pkg']['name']]
+                real_sub_node = sub_node.add(dep['to_pkg']['id'])
+                self.traverse_packages(real_sub_node,dep['to_pkg'],depth,False)
 
     def load_tree_by_type(self):
         """Display components organized by type."""
