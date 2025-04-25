@@ -68,19 +68,19 @@ class SBOMParser:
         pattern = r'Package-(' + '|'.join(re.escape(t) for t in types) + r')\b'
         if 'packages' in content:
             ##File
-            # for fl in content['files']:
-            #     spdx_id = fl.get('SPDXID', 'Unknown')
-            #     fl_elem = {
-            #         'category': 'File',
-            #         'name': fl.get('fileName', 'Unknown'),
-            #         'id' : spdx_id,
-            #         'version': fl.get('versionInfo', 'Unknown'),
-            #         'type': fl.get('fileTypes', ['Unknown'])[0],
-            #         'supplier': fl.get('supplier', 'Unknown'),
-            #         'license': fl.get('licenseConcluded', 'Unknown'),
-            #     }
-            #     pkg_dict[spdx_id]=fl_elem
-            #     packages.append(fl_elem)
+            for fl in content['files']:
+                spdx_id = fl.get('SPDXID', 'Unknown')
+                fl_elem = {
+                    'category': 'File',
+                    'name': fl.get('fileName', 'Unknown'),
+                    'id' : spdx_id,
+                    'version': fl.get('versionInfo', 'Unknown'),
+                    'type': fl.get('fileTypes', ['Unknown'])[0],
+                    'supplier': fl.get('supplier', 'Unknown'),
+                    'license': fl.get('licenseConcluded', 'Unknown'),
+                }
+                pkg_dict[spdx_id]=fl_elem
+                packages.append(fl_elem)
             for pkg in content['packages']:
                 spdx_id = pkg.get('SPDXID', 'Unknown')
                 matches = re.findall(pattern, spdx_id)
@@ -105,6 +105,11 @@ class SBOMParser:
                 to_id = pkg_dict.get(rel.get('relatedSpdxElement', 'Unknown'), {'id': 'Unknown'})['id']
                 to_pkg = pkg_dict.get(rel.get('relatedSpdxElement', 'Unknown'), {'name': 'Unknown','id': to_id})
                 relationship = rel.get('relationshipType', 'Unknown')
+                if from_id=='Unknown' or to_id=='Unknown':
+                    continue
+                if to_pkg.get('category',None) is None:
+                    continue
+
                 if from_id not in relationships:
                     relationships[from_id] = []
 
@@ -340,8 +345,8 @@ class Sbommage(App):
         details_container = VerticalScroll(self.details_display)
         
         # Set layout proportions
-        tree_container.styles.width = "35%"
-        details_container.styles.width = "65%"
+        tree_container.styles.width = "45%"
+        details_container.styles.width = "55%"
         tree_container.styles.height = "98%"
         details_container.styles.height = "98%"
 
@@ -506,8 +511,7 @@ class Sbommage(App):
             if v['id']==package['id']:
                 return
         path.append(package)
-        main_node = node.add_leaf("MainPackage")
-        main_node.data = {'type': 'package', 'info': package}
+        node.data = {'type': 'package', 'info': package}
         self.vis[package['id']]=True
         if self.sbom_data['relationships'].get(package['id'], None) == None:
             return
